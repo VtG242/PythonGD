@@ -7,6 +7,7 @@ import gd
 class GoodDataLogin():
     """Class which performs login to GoodData platform and manage obtaining of temporary token"""
 
+    # class debug variable
     debug = False
     login_json_template = """
 {
@@ -19,7 +20,7 @@ class GoodDataLogin():
 }
     """
 
-    def __init__(self, usr, passwd, gdhost="https://secure.gooddata.com"):
+    def __init__(self, usr, passwd, gdhost="https://secure.gooddata.com", debug=False):
         """
         Initialization of GoodDataLogin object - mandatory arguments are Gooddata login and password.
         For another host than "secure" (white-label solution) use gdhost parameter.
@@ -27,6 +28,8 @@ class GoodDataLogin():
         self.gdhost = gdhost
         self.usr = usr
         self.passwd = passwd
+        # instance debug variable
+        self.debug = debug if True else False
 
         login_json = json.loads(GoodDataLogin.login_json_template)
         login_json["postUserLogin"]["login"] = usr
@@ -59,13 +62,13 @@ class GoodDataLogin():
             # temporary token is returned in API response as X-GDC-AuthTT header
             self.temporary_token = api_response["info"]["X-GDC-AuthTT"]
 
-            if GoodDataLogin.debug:
+            if GoodDataLogin.debug | self.debug:
                 gd.debug_info(request, api_response, url, json.dumps(headers), json.dumps(login_json))
 
             response.close()
 
     def __repr__(self):
-        return "GoodDataLogin instance detail:\nhost = %s\nuser = %s profile = %s\nSST = %s\nTT = %s" % (
+        return "<%s.%s instance at  %s:\nhost = %s\nuser = %s profile = %s\nSST = %s\nTT = %s \n>" % ( self.__class__.__module__, self.__class__.__name__, hex(id(self)),
             self.gdhost, self.usr, self.login_profile, self.super_secured_token, self.temporary_token)
 
     def generate_temporary_token(self):
@@ -83,15 +86,16 @@ class GoodDataLogin():
             response = urllib2.urlopen(request)
         except urllib2.HTTPError, emsg:
             if emsg.code == 401:
-                """ we shouldn't receive unauthorized here - this is handled in __init__ - most probably it means that SST is no longer valid or logout() had been called
+                """ we shouldn't receive unauthorized (bad user/pass) here - this is handled in __init__ 
+                - most probably it means that SST is no longer valid or logout() had been called
                 - reinitialize of instance needed """
-                if GoodDataLogin.debug: print "* 401 caught during TT call - calling for valid SST."
+                if GoodDataLogin.debug | self.debug: print "* 401 caught during TT call - calling for valid SST."
                 GoodDataLogin.__init__(self, self.usr, self.passwd, self.gdhost)
             else:
                 raise gd.GoodDataError(str(emsg) + " - " + url + "' problem during obtaining of temporary token.")
         else:
             api_response = gd.check_response(response)
-            if GoodDataLogin.debug:
+            if GoodDataLogin.debug | self.debug:
                 gd.debug_info(request, api_response, url, json.dumps(headers))
             response.close()
 
@@ -119,7 +123,8 @@ class GoodDataLogin():
         else:
             api_response = gd.check_response(response)
             self.super_secured_token = ""
-            if GoodDataLogin.debug:
+            self.temporary_token = ""
+            if GoodDataLogin.debug | self.debug:
                 gd.debug_info(request, api_response, url, json.dumps(headers))
             response.close()
 
@@ -134,14 +139,17 @@ class GoodDataLogin():
 if __name__ == "__main__":
 
     try:
-
-        GoodDataLogin.debug = True
+        GoodDataLogin.debug = False
         gl = GoodDataLogin("vladimir.volcko+sso@gooddata.com", "xxx")
         # GoodDataLogin object text representation
         print gl
         # for main API call we need call get_temporary_token() function which returns TT token (X-GDC-AuthTT)
         gl.save_to_file("gd.auth")
-        # gl.logout()
+        gl.logout()
+        print gl
+
+        print gl.generate_temporary_token()
+        print gl
 
     except gd.GoodDataError, emsg:
         print "GoodData error: " + str(emsg)
