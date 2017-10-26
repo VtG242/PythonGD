@@ -2,8 +2,10 @@ import json
 import traceback
 import urllib2
 import os
+import zipfile
 import gd
 import gdlogin
+import datetime
 
 
 class GoodDataETL():
@@ -83,15 +85,24 @@ class GoodDataETL():
 
         # writing manifests and csv templates files to etl working directory
         try:
-            # if directory infrastructure doesn't exist we create missing dirs
-            if not os.path.isdir(self.wd + "/" + self.project):
-                os.makedirs(self.wd + "/" + self.project)
-            if not os.path.isdir(self.wd + "/" + self.project + "/csv"):
-                os.makedirs(self.wd + "/" + self.project + "/csv")
-            if not os.path.isdir(self.wd + "/" + self.project + "/manifests"):
-                os.makedirs(self.wd + "/" + self.project + "/manifests")
+            # if directory infrastructure doesn't exist let's create it
+            create_dir_if_not_exists(os.path.join(self.wd))
+            create_dir_if_not_exists(os.path.join(self.wd, self.project))
+            create_dir_if_not_exists(os.path.join(self.wd, self.project, "csv"))
+            create_dir_if_not_exists(os.path.join(self.wd, self.project, "manifests"))
 
-            self.save_manifests_and_templates()
+            # write to file in dir manifests in etl working directory
+            for i in range(len(self.datasets)):
+                with open(os.path.join(self.wd, self.project, "manifests", self.datasets[i] + "_upload_info.json"),
+                          "w") as f:
+                    f.write(json.dumps(self.manifests[i], sort_keys=True, indent=2, separators=(',', ': ')))
+            # write csv file with template header to csv dir
+            for i in range(len(self.datasets)):
+                with open(os.path.join(self.wd, self.project, "csv", self.datasets[i] + "_header.csv"), "w") as f:
+                    pom = ""
+                    for attr in self.csv_header_templates[i]:
+                        pom += '"%s",' % attr
+                    f.write(pom[0:-1])
 
             # create final upload_info.json
             if len(datasets) > 1:  # we create SLI BATCH manifest
@@ -102,16 +113,51 @@ class GoodDataETL():
                 upload_info_json = dict(self.manifests[0])
 
             # write final upload_info.json to manifests directory
-            with open(self.wd + "/" + self.project + "/manifests/upload_info.json", "w") as f:
+            with open(os.path.join(self.wd, self.project, "manifests", "upload_info.json"), "w") as f:
                 f.write(json.dumps(upload_info_json, sort_keys=True, indent=2, separators=(',', ': ')))
 
         except OSError as e:
             raise gd.GoodDataError(e, "Problem with etl working directory")
+        except IOError as e:
+            raise gd.GoodDataError(e, "Problem during file operation")
 
     def perform_upload(self):
-        pass
-        # upload to webdav
-        # etl/pull2
+        """
+        This method performs upload to user staging directory (WebDav)
+        As this method can be also called directly(without calling prepare_upload() after creating GoodDataETL instance
+        we have to check that all necessary files are in place.
+        """
+        if self.datasets and self.manifests:
+            # this means that prepare_upload() has been ran so we most probably should have all files in place
+            pass
+        else:
+            print "TODO: We need to read files from upload_info.json"
+            # etl/pull2
+
+        # creating upload.zip
+        try:
+            files = []
+            # adding csv files with data for upload
+            for dataset in self.datasets:
+                files.append(os.path.join(self.wd, self.project, "csv", dataset + ".csv"))
+            # adding current manifest
+            files.append(os.path.join(self.wd, self.project, "manifests", "upload_info.json"))
+
+            zf = zipfile.ZipFile(os.path.join(self.wd, self.project, "upload.zip"), "w", zipfile.ZIP_DEFLATED)
+            for f in files:
+                zf.write(f, os.path.basename(f))
+            zf.close()
+
+            zf = zipfile.ZipFile(os.path.join(self.wd, self.project, "upload.zip"))
+            with open(os.path.join(self.wd, self.project, "upload.txt"), "w") as f:
+                for info in zf.infolist():
+                    f.write("%s\n" % info.filename)
+                    f.write("\tModified:\t%s\n" % datetime.datetime(*info.date_time))
+                    f.write("\tCompressed:\t%d bytes\n" % info.compress_size)
+                    f.write("\tUncompressed:\t%d bytes\n" % info.file_size)
+        except Exception as e:
+            raise gd.GoodDataError(e,
+                                   "Problem during creating upload.zip - check that all source files for upload are in csv directory")
 
     def save_manifests_and_templates(self):
         # write to file in dir manifests in etl working directory
@@ -127,16 +173,20 @@ class GoodDataETL():
                 f.write(pom[0:-1])
 
 
+def create_dir_if_not_exists(directory):
+    if not os.path.isdir(directory):
+        os.makedirs(directory)
+
 # test code
 if __name__ == "__main__":
 
     GoodDataETL.debug = False
 
     try:
-        etl = GoodDataETL(gdlogin.GoodDataLogin("vladimir.volcko+sso@gooddata.com", "xxx"),
+        etl = GoodDataETL(gdlogin.GoodDataLogin("vladimir.volcko+sso@gooddata.com", "vtgdevel"),
                           "gmlgncezgyatnnr0d1mc6tss82olgf0s")
         etl.prepare_upload("./etlwd", ["allgrain", "all"])
-
+        etl.perform_upload()
         etl.glo.logout()
     except gd.GoodDataError as e:
         print e
