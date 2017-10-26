@@ -36,26 +36,28 @@ class GoodDataLogin():
         login_json["postUserLogin"]["password"] = passwd
 
         # step 1 - /gdc/account/login
-        headers = gd.http_headers_template.copy()
-        url = self.gdhost + "/gdc/account/login"
-        request = urllib2.Request(url, data=json.dumps(login_json), headers=headers)
-
         try:
-            response = urllib2.urlopen(request)
-        except urllib2.HTTPError, emsg:
-            if emsg.code == 401:
-                raise gd.GoodDataError(str(emsg) + " - please check your GoodData credentials and try it again.")
-            elif emsg.code == 404:
-                raise gd.GoodDataError(str(
-                    emsg) + " - there is problem with '" + url + "' please check that GoodData API endpoint is specified correctly.")
+            headers = gd.http_headers_template.copy()
+            url = self.gdhost + "/gdc/account/login"
+            if gdhost.startswith("https://"):
+                url = self.gdhost + "/gdc/account/login"
             else:
-                raise Exception(emsg)
-        except urllib2.URLError, emsg:
-            raise gd.GoodDataError(str(
-                emsg) + " - there is problem with '" + self.gdhost + "' please check that GoodData host name is specified correctly.")
+                raise ValueError("https:// not specified in GoodData host url")
+            request = urllib2.Request(url, data=json.dumps(login_json), headers=headers)
+            response = urllib2.urlopen(request)
+        except ValueError as e:
+            raise gd.GoodDataAPIError(url,e, msg="Problem with url")
+        except urllib2.HTTPError as e:
+            if e.code == 401:
+                raise gd.GoodDataAPIError(url, e, msg="Problem with login to GoodData platform")
+            elif e.code == 404:
+                raise gd.GoodDataAPIError(url, e, msg="Problem with GoodData host or resource")
+            else:
+                raise Exception(e)
+        except urllib2.URLError as e:
+            raise gd.GoodDataAPIError(url, e, msg="Problem with url for GoodData host")
         else:
             api_response = gd.check_response(response)
-
             account_login_response_json = json.loads(api_response["body"])
             self.login_profile = account_login_response_json["userLogin"]["state"]
             self.super_secured_token = account_login_response_json["userLogin"]["token"]
@@ -67,9 +69,10 @@ class GoodDataLogin():
 
             response.close()
 
-    def __repr__(self):
-        return "<%s.%s instance at  %s:\nhost = %s\nuser = %s profile = %s\nSST = %s\nTT = %s \n>" % ( self.__class__.__module__, self.__class__.__name__, hex(id(self)),
-            self.gdhost, self.usr, self.login_profile, self.super_secured_token, self.temporary_token)
+    def __str__(self):
+        return "<%s.%s instance at %s:\nhost = %s\nuser = %s profile = %s\nSST = %s\nTT = %s \n>" % (
+        self.__class__.__module__, self.__class__.__name__, hex(id(self)),
+        self.gdhost, self.usr, self.login_profile, self.super_secured_token, self.temporary_token)
 
     def generate_temporary_token(self):
         """
@@ -84,15 +87,15 @@ class GoodDataLogin():
 
         try:
             response = urllib2.urlopen(request)
-        except urllib2.HTTPError, emsg:
-            if emsg.code == 401:
+        except urllib2.HTTPError as e:
+            if e.code == 401:
                 """ we shouldn't receive unauthorized (bad user/pass) here - this is handled in __init__ 
                 - most probably it means that SST is no longer valid or logout() had been called
                 - reinitialize of instance needed """
                 if GoodDataLogin.debug | self.debug: print "* 401 caught during TT call - calling for valid SST."
                 GoodDataLogin.__init__(self, self.usr, self.passwd, self.gdhost)
             else:
-                raise gd.GoodDataError(str(emsg) + " - " + url + "' problem during obtaining of temporary token.")
+                raise gd.GoodDataAPIError(url, e, msg="Problem during obtaining of temporary token")
         else:
             api_response = gd.check_response(response)
             if GoodDataLogin.debug | self.debug:
@@ -118,8 +121,8 @@ class GoodDataLogin():
 
         try:
             response = urllib2.urlopen(request)
-        except urllib2.HTTPError, emsg:
-            raise gd.GoodDataError(str(emsg) + " - " + url + "' problem during logout.")
+        except urllib2.HTTPError as e:
+            raise gd.GoodDataAPIError(url, e, msg="Problem during logout")
         else:
             api_response = gd.check_response(response)
             self.super_secured_token = ""
@@ -139,20 +142,17 @@ class GoodDataLogin():
 if __name__ == "__main__":
 
     try:
-        GoodDataLogin.debug = False
-        gl = GoodDataLogin("vladimir.volcko+sso@gooddata.com", "xxx")
+        GoodDataLogin.debug = True
+        gl = GoodDataLogin("vladimir.volcko+sso@gooddata.com", "xxx", gdhost="https://secure.gooddata.com")
         # GoodDataLogin object text representation
         print gl
         # for main API call we need call get_temporary_token() function which returns TT token (X-GDC-AuthTT)
-        gl.save_to_file("gd.auth")
-        gl.logout()
-        print gl
-
         print gl.generate_temporary_token()
-        print gl
+        gl.logout()
 
-    except gd.GoodDataError, emsg:
-        print "GoodData error: " + str(emsg)
+    except gd.GoodDataAPIError, emsg:
+        print emsg
+        # print emsg.args
 
     except Exception, emsg:
         print traceback.print_exc()
