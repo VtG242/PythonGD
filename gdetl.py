@@ -13,24 +13,29 @@ class GoodDataETL():
     # class debug variable
     debug = False
 
-    def __init__(self, globject, project, debug=False):
+    def __init__(self, globject, project, working_directory, debug=False):
         self.glo = globject
         self.project = project
         # instance debug variable
         self.debug = debug if True else False
-        self.wd = "./etlwd"
+        self.wd = working_directory
         self.datasets = []
         self.manifests = []
         self.csv_header_templates = []
 
-    def prepare_upload(self, working_directory, datasets):
+        # creating of a working_directory
+        try:
+            create_dir_if_not_exists(self.wd)
+        except OSError as e:
+            raise gd.GoodDataError("Problem with etl working directory", e)
+
+    def prepare_upload(self, datasets):
         """ This function downloads manifest/s for given list of datasets from GoodData API
         1) modify names for csv columns to more human readable names
         2) save manifests in etl working directory in project/manifest
         3) save template csv with headers in etl working directory in project/csv
         4) creates final upload_info.json - in case of more datasets it creates batch mode manifest
         """
-        self.wd = working_directory
         self.datasets = datasets
         self.datasets.sort()
 
@@ -87,7 +92,6 @@ class GoodDataETL():
         # writing manifests and csv templates files to etl working directory
         try:
             # if directory infrastructure doesn't exist let's create it
-            create_dir_if_not_exists(os.path.join(self.wd))
             create_dir_if_not_exists(os.path.join(self.wd, self.project))
             create_dir_if_not_exists(os.path.join(self.wd, self.project, "csv"))
             create_dir_if_not_exists(os.path.join(self.wd, self.project, "manifests"))
@@ -214,11 +218,22 @@ if __name__ == "__main__":
     GoodDataETL.debug = False
 
     try:
-        etl = GoodDataETL(gdlogin.GoodDataLogin("vladimir.volcko+sso@gooddata.com", "xxx"),
-                          "gmlgncezgyatnnr0d1mc6tss82olgf0s")
-        # etl.prepare_upload("./etlwd", ["allgrain","all"])
+        # GoodData login
+        gl = gdlogin.GoodDataLogin("vladimir.volcko+sso@gooddata.com", "xxx")
+
+        # Creating etl instance
+        etl = GoodDataETL(gl, "gmlgncezgyatnnr0d1mc6tss82olgf0s", "/Users/VtG/Work/PycharmProjects/GD/etlwd")
+
+        # Preparing metadata for ETL
+        etl.prepare_upload(["allgrain","all"])
+
+        # Time for custom code which somehow upload source csv files to csv directory in ETL working directory
+
+        # Main upload to GoodData platform
         etl.perform_upload()
-        etl.glo.logout()
+
+        # GoodData logout
+        gl.logout()
     except gd.GoodDataError as e:
         print e
     except gd.GoodDataAPIError as e:
