@@ -128,15 +128,22 @@ class GoodDataETL():
         As this method can be also called directly(without calling prepare_upload() after creating GoodDataETL instance
         we have to check that all necessary files are in place.
         """
-        if self.datasets and self.manifests:
-            # this means that prepare_upload() has been ran so we most probably should have all files in place
-            pass
-        else:
-            print "TODO: We need to read files from upload_info.json"
-            # etl/pull2
+        if not self.datasets:
+            try:
+                with open(os.path.join(self.wd, self.project, "manifests", "upload_info.json"), "r") as f:
+                    upload_info_json = json.loads(f.read())
+
+                if upload_info_json.has_key("dataSetSLIManifestList"):
+                    for manifest in upload_info_json["dataSetSLIManifestList"]:
+                        self.datasets.append(manifest["dataSetSLIManifest"]["dataSet"][8:])
+                else:
+                    self.datasets.append(upload_info_json["dataSetSLIManifest"]["dataSet"][8:])
+            except Exception as e:
+                raise gd.GoodDataError("Problem parsing upload_info.json - run preparation phase and try it again", e)
 
         # compare headers of csv files for upload with template csv files
         try:
+            p = 0
             for dataset in self.datasets:
                 header_template_file = os.path.join(self.wd, self.project, "csv", dataset + "_header.csv")
                 with open(header_template_file, "r") as f:
@@ -152,14 +159,22 @@ class GoodDataETL():
 
                 if header_template != header_csv:
                     raise gd.GoodDataError("Header of template file and csv file for upload doesn't match")
+                p += 1
+            else:
+                # it should not happen in normal circumstances - I used this only for testing :-)
+                if p == 0:
+                    raise Exception("Checking of csv headers did not happen (self.datasets empty)")
 
         except IOError as e:
             raise gd.GoodDataError("Problem during comparing csv headers", e)
         except gd.GoodDataError as e:
             print e
-            print "%s: \n%s" % (os.path.basename(header_template_file),header_template)
-            print "%s: \n%s" % (os.path.basename(header_csv_file),header_csv)
-            print "\n%s file MUST contain same columns as %s (order doesn't matter)" % (os.path.basename(header_csv_file),os.path.basename(header_template_file))
+            print "%s: \n%s" % (os.path.basename(header_template_file), header_template)
+            print "%s: \n%s" % (os.path.basename(header_csv_file), header_csv)
+            print "\n%s file MUST contain same columns as %s (order doesn't matter)" % (
+                os.path.basename(header_csv_file), os.path.basename(header_template_file))
+        except Exception as e:
+            raise gd.GoodDataError(e)
         else:
             # creating upload.zip
             try:
@@ -184,7 +199,8 @@ class GoodDataETL():
                         f.write("\tUncompressed:\t%d bytes\n" % info.file_size)
             except Exception as e:
                 raise gd.GoodDataError(
-                    "Problem during creating upload.zip - check that all source files for upload are in csv directory", e)
+                    "Problem during creating upload.zip - check that all source files for upload are in csv directory",
+                    e)
 
 
 def create_dir_if_not_exists(directory):
@@ -198,9 +214,9 @@ if __name__ == "__main__":
     GoodDataETL.debug = False
 
     try:
-        etl = GoodDataETL(gdlogin.GoodDataLogin("vladimir.volcko+sso@gooddata.com", "vtgdevel"),
+        etl = GoodDataETL(gdlogin.GoodDataLogin("vladimir.volcko+sso@gooddata.com", "xxx"),
                           "gmlgncezgyatnnr0d1mc6tss82olgf0s")
-        etl.prepare_upload("./etlwd", ["allgrain", "all"])
+        # etl.prepare_upload("./etlwd", ["allgrain","all"])
         etl.perform_upload()
         etl.glo.logout()
     except gd.GoodDataError as e:
