@@ -39,6 +39,17 @@ def show_error(err_msg_json):
 class GoodDataError(Exception):
     """General errors from GoodData library"""
 
+    def __init__(self, msg, original_exception=None):
+        if original_exception is None:
+            self.msg = msg
+        else:
+            self.msg = msg + ": %s" % original_exception
+        super(GoodDataError, self).__init__(self.msg)
+        self.original_exception = original_exception
+
+    def __str__(self):
+        return "GD error: %s" % self.msg
+
 
 class GoodDataAPIError(Exception):
     """Specific errors from GoodData API or related"""
@@ -73,7 +84,6 @@ class GoodDataAPIError(Exception):
             self.detail = original_exception.reason
         else:
             self.detail = "[empty]"
-
 
     def __str__(self):
         return "%s: %s\nUrl: %s\nMessage: %s" % (self.msg, self.original_exception, self.url, self.detail)

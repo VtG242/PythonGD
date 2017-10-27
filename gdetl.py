@@ -6,6 +6,7 @@ import zipfile
 import gd
 import gdlogin
 import datetime
+import csv
 
 
 class GoodDataETL():
@@ -117,9 +118,9 @@ class GoodDataETL():
                 f.write(json.dumps(upload_info_json, sort_keys=True, indent=2, separators=(',', ': ')))
 
         except OSError as e:
-            raise gd.GoodDataError(e, "Problem with etl working directory")
+            raise gd.GoodDataError("Problem with etl working directory", e)
         except IOError as e:
-            raise gd.GoodDataError(e, "Problem during file operation")
+            raise gd.GoodDataError("Problem during file operation", e)
 
     def perform_upload(self):
         """
@@ -134,48 +135,62 @@ class GoodDataETL():
             print "TODO: We need to read files from upload_info.json"
             # etl/pull2
 
-        # creating upload.zip
+        # compare headers of csv files for upload with template csv files
         try:
-            files = []
-            # adding csv files with data for upload
             for dataset in self.datasets:
-                files.append(os.path.join(self.wd, self.project, "csv", dataset + ".csv"))
-            # adding current manifest
-            files.append(os.path.join(self.wd, self.project, "manifests", "upload_info.json"))
+                header_template_file = os.path.join(self.wd, self.project, "csv", dataset + "_header.csv")
+                with open(header_template_file, "r") as f:
+                    reader = csv.reader(f)
+                    header_template = reader.next()
+                header_csv_file = os.path.join(self.wd, self.project, "csv", dataset + ".csv")
+                with open(header_csv_file, "r") as f:
+                    reader = csv.reader(f)
+                    header_csv = reader.next()
 
-            zf = zipfile.ZipFile(os.path.join(self.wd, self.project, "upload.zip"), "w", zipfile.ZIP_DEFLATED)
-            for f in files:
-                zf.write(f, os.path.basename(f))
-            zf.close()
+                header_template.sort()
+                header_csv.sort()
 
-            zf = zipfile.ZipFile(os.path.join(self.wd, self.project, "upload.zip"))
-            with open(os.path.join(self.wd, self.project, "upload.txt"), "w") as f:
-                for info in zf.infolist():
-                    f.write("%s\n" % info.filename)
-                    f.write("\tModified:\t%s\n" % datetime.datetime(*info.date_time))
-                    f.write("\tCompressed:\t%d bytes\n" % info.compress_size)
-                    f.write("\tUncompressed:\t%d bytes\n" % info.file_size)
-        except Exception as e:
-            raise gd.GoodDataError(e,
-                                   "Problem during creating upload.zip - check that all source files for upload are in csv directory")
+                if header_template != header_csv:
+                    raise gd.GoodDataError("Header of template file and csv file for upload doesn't match")
 
-    def save_manifests_and_templates(self):
-        # write to file in dir manifests in etl working directory
-        for i in range(len(self.datasets)):
-            with open(self.wd + "/" + self.project + "/manifests/" + self.datasets[i] + "_upload_info.json", "w") as f:
-                f.write(json.dumps(self.manifests[i], sort_keys=True, indent=2, separators=(',', ': ')))
-        # write csv file with template header to csv dir
-        for i in range(len(self.datasets)):
-            with open(self.wd + "/" + self.project + "/csv/" + self.datasets[i] + "_header.csv", "w") as f:
-                pom = ""
-                for attr in self.csv_header_templates[i]:
-                    pom += '"%s",' % attr
-                f.write(pom[0:-1])
+        except IOError as e:
+            raise gd.GoodDataError("Problem during comparing csv headers", e)
+        except gd.GoodDataError as e:
+            print e
+            print "%s: \n%s" % (os.path.basename(header_template_file),header_template)
+            print "%s: \n%s" % (os.path.basename(header_csv_file),header_csv)
+            print "\n%s file MUST contain same columns as %s (order doesn't matter)" % (os.path.basename(header_csv_file),os.path.basename(header_template_file))
+        else:
+            # creating upload.zip
+            try:
+                files = []
+                # adding csv files with data for upload
+                for dataset in self.datasets:
+                    files.append(os.path.join(self.wd, self.project, "csv", dataset + ".csv"))
+                # adding current manifest
+                files.append(os.path.join(self.wd, self.project, "manifests", "upload_info.json"))
+
+                zf = zipfile.ZipFile(os.path.join(self.wd, self.project, "upload.zip"), "w", zipfile.ZIP_DEFLATED)
+                for f in files:
+                    zf.write(f, os.path.basename(f))
+                zf.close()
+
+                zf = zipfile.ZipFile(os.path.join(self.wd, self.project, "upload.zip"))
+                with open(os.path.join(self.wd, self.project, "upload.txt"), "w") as f:
+                    for info in zf.infolist():
+                        f.write("%s\n" % info.filename)
+                        f.write("\tModified:\t%s\n" % datetime.datetime(*info.date_time))
+                        f.write("\tCompressed:\t%d bytes\n" % info.compress_size)
+                        f.write("\tUncompressed:\t%d bytes\n" % info.file_size)
+            except Exception as e:
+                raise gd.GoodDataError(
+                    "Problem during creating upload.zip - check that all source files for upload are in csv directory", e)
 
 
 def create_dir_if_not_exists(directory):
     if not os.path.isdir(directory):
         os.makedirs(directory)
+
 
 # test code
 if __name__ == "__main__":
