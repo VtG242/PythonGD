@@ -2,6 +2,8 @@
 General functions, variables used in other gd modules
 """
 import json
+import logging
+
 
 # using BaseHTTPRequestHandler.responses as dictionary for HTTP statuses
 from BaseHTTPServer import BaseHTTPRequestHandler
@@ -12,17 +14,13 @@ http_headers_template = {
 }
 
 
-def debug_info(request, api_response, url, headers, payload=""):
-    print "-" * 100
-    print "* REQUEST:"
-    print request.get_method() + " " + url
-    print "Headers: " + headers
-    if payload: print "Payload: " + payload
-    print "\n* RESPONSE:"
-    print api_response["info"]
-    print api_response["code"] + "\n"
-    print api_response["body"]
-    print "-" * 100
+def request_info(request):
+    data = "" if not request.data else "\nData: " + request.data
+    return "REQUEST: {} {}\nHeaders: {}{}".format(request.get_method(), request.get_full_url(), request.headers, data)
+
+
+def response_info(api_response):
+    return "RESPONSE: {}\n{}\n{}\n".format(api_response["code"], api_response["info"], api_response["body"])
 
 
 def check_response(response):
@@ -43,12 +41,12 @@ class GoodDataError(Exception):
         if original_exception is None:
             self.msg = msg
         else:
-            self.msg = msg + ": %s" % original_exception
+            self.msg = "{}: {}".format(msg,original_exception)
         super(GoodDataError, self).__init__(self.msg)
         self.original_exception = original_exception
 
     def __str__(self):
-        return "GD error: %s" % self.msg
+        return "GD error: {}".format(self.msg)
 
 
 class GoodDataAPIError(Exception):
@@ -57,15 +55,15 @@ class GoodDataAPIError(Exception):
     def __init__(self, url, original_exception, msg=None):
         if msg is None:  # Set some default useful error message
             msg = "An error occurred during API operation"
-        super(GoodDataAPIError, self).__init__(msg + (": %s" % original_exception))
+        super(GoodDataAPIError, self).__init__("{}: {}".format(msg,original_exception))
         self.url = url
         self.msg = msg
         self.original_exception = original_exception
 
-        if hasattr(original_exception, 'read'):
+        if hasattr(original_exception, "read"):
             gd_err_msg = original_exception.read()
             try:
-                # in case that response isn't json or hasn't message key saving as in in detail
+                # in case that response isn't json or hasn't message key saving as is in detail
                 gd_err_msg = json.loads(gd_err_msg)
 
                 if gd_err_msg.has_key("message"):
@@ -86,4 +84,4 @@ class GoodDataAPIError(Exception):
             self.detail = "[empty]"
 
     def __str__(self):
-        return "%s: %s\nUrl: %s\nMessage: %s" % (self.msg, self.original_exception, self.url, self.detail)
+        return "{}: {}\nUrl: {}\nMessage: {}".format(self.msg, self.original_exception, self.url, self.detail)
