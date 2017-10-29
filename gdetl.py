@@ -8,12 +8,13 @@ import gdlogin
 import datetime
 import csv
 import logging
+import uuid
+import time
 
 logger = logging.getLogger(__name__)
 
 
 class GoodDataETL():
-
     def __init__(self, globject, project, working_directory):
         self.glo = globject
         self.project = project
@@ -174,7 +175,8 @@ class GoodDataETL():
             logger.error(e, exc_info=True)
             raise gd.GoodDataError("IO problem during comparing csv headers", e)
         except gd.GoodDataError as e:
-            emsg = "{}\n{}:\n{}\n{}:\n{}\nFile '{}' MUST contain same columns as file '{}' (order doesn't matter)".format(e,
+            emsg = "{}\n{}:\n{}\n{}:\n{}\nFile '{}' MUST contain same columns as file '{}' (order doesn't matter)".format(
+                e,
                 os.path.basename(header_template_file), header_template, os.path.basename(header_csv_file), header_csv,
                 os.path.basename(header_csv_file), os.path.basename(header_template_file))
             logger.error(emsg)
@@ -210,7 +212,41 @@ class GoodDataETL():
             raise gd.GoodDataError(
                 "Problem during creating upload.zip - check that all source files for upload are in csv directory", e)
 
-        #upload to WebDav
+        # upload to WebDav
+        upload_zip_size = os.path.getsize(os.path.join(self.wd, self.project, "upload.zip"))
+        with open(os.path.join(self.wd, self.project, "upload.zip"), "rb") as f:
+            headers = gd.http_headers_template.copy()
+            headers["X-GDC-AuthTT"] = self.glo.generate_temporary_token()
+            headers["Content-Type"] = "application/zip"
+            headers["Content-Length"] = upload_zip_size
+
+            remote_etl_dir = uuid.uuid4().hex
+            url = "https://secure-di.gooddata.com/uploads/{}/{}/upload.zip".format(self.project, remote_etl_dir)
+            request = urllib2.Request(url, headers=headers, data=f.read())
+            request.get_method = lambda: 'PUT'
+
+            try:
+                logger.debug(gd.request_info(request))
+                start_time = time.time()
+                response = urllib2.urlopen(request)
+                total_time_sec = time.time() - start_time
+            except urllib2.HTTPError as e:
+                logger.error(e)
+                raise gd.GoodDataAPIError(url, e, msg="Problem during upload to GoodData WebDAV")
+                # TODO: take a look at reason and in case of need check /gdc/ping anf if everything OK try retry
+            except Exception as e:
+                logger.error(e)
+                raise Exception(e)
+
+        with open(os.path.join(self.wd, self.project, "uploaded.to"), "w") as f:
+            f.write("{}\n".format(url))
+
+        # processing WebDav response
+        api_response = gd.check_response(response)
+        logger.debug(gd.response_info(api_response))
+        logger.debug("File uploaded to WebDav in {}s".format(round(total_time_sec, 2)))
+        response.close()
+
 
 def create_dir_if_not_exists(directory):
     if not os.path.isdir(directory):
@@ -244,7 +280,7 @@ if __name__ == "__main__":
         etl = GoodDataETL(gl, "gmlgncezgyatnnr0d1mc6tss82olgf0s", "/Users/VtG/Work/PycharmProjects/GD/etlwd")
 
         # Preparing metadata for ETL
-        etl.prepare_upload(["allgrain","all"])
+        etl.prepare_upload(["allgrain", "all"])
 
         # Time for custom code which somehow upload source csv files to csv directory in ETL working directory
 
