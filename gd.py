@@ -46,7 +46,7 @@ class GoodDataError(Exception):
         self.original_exception = original_exception
 
     def __str__(self):
-        return "GD error: {}".format(self.msg)
+        return "{}".format(self.msg)
 
 
 class GoodDataAPIError(Exception):

@@ -7,17 +7,16 @@ import gd
 import gdlogin
 import datetime
 import csv
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class GoodDataETL():
-    # class debug variable
-    debug = False
 
-    def __init__(self, globject, project, working_directory, debug=False):
+    def __init__(self, globject, project, working_directory):
         self.glo = globject
         self.project = project
-        # instance debug variable
-        self.debug = debug if True else False
         self.wd = working_directory
         self.datasets = []
         self.manifests = []
@@ -48,46 +47,45 @@ class GoodDataETL():
             request = urllib2.Request(url, headers=headers)
 
             try:
+                logger.debug(gd.request_info(request))
                 response = urllib2.urlopen(request)
             except urllib2.HTTPError as e:
+                logger.error(e, exc_info=True)
                 # for 40x errors we don't retry
                 if e.code == 403 or e.code == 404:
                     raise gd.GoodDataAPIError(url, e, msg="Problem during retrieving a manifest")
                 else:
                     raise Exception(e)
                     # to do take a look at reason and in case of need check /gdc/ping anf if everything OK try retry
-            else:
 
-                api_response = gd.check_response(response)
+            # processing of individual singleloadinterface/dataset response
+            api_response = gd.check_response(response)
+            logger.debug(gd.response_info(api_response))
+            manifest_json = json.loads(api_response["body"])
 
-                if GoodDataETL.debug | self.debug:
-                    gd.debug_info(request, api_response, url, json.dumps(headers))
+            p = 0
+            csv_header_template = []
+            for m_column in manifest_json["dataSetSLIManifest"]["parts"]:
+                # for date we use in name date format name(yyyy-MM-dd)
+                if str(m_column["columnName"]).find(".dt_") > -1:
+                    human_readable_name = str(m_column["columnName"]).split("_")[-2] + "(" + \
+                                          m_column["constraints"]["date"] + ")"
+                else:  # for other attributtes we will pick name after last _
+                    human_readable_name = str(m_column["columnName"]).split("_")[-1]
 
-                manifest_json = json.loads(api_response["body"])
+                # instead of originally generated names we will use human readable name of attribute
+                manifest_json["dataSetSLIManifest"]["parts"][p]["columnName"] = human_readable_name
+                csv_header_template.append(human_readable_name)
+                p += 1
 
-                p = 0
-                csv_header_template = []
-                for m_column in manifest_json["dataSetSLIManifest"]["parts"]:
-                    # for date we use in name date format name(yyyy-MM-dd)
-                    if str(m_column["columnName"]).find(".dt_") > -1:
-                        human_readable_name = str(m_column["columnName"]).split("_")[-2] + "(" + \
-                                              m_column["constraints"]["date"] + ")"
-                    else:  # for other attributtes we will pick name after last _
-                        human_readable_name = str(m_column["columnName"]).split("_")[-1]
+            # also name of csv file is changed within manifest
+            manifest_json["dataSetSLIManifest"]["file"] = dataset + ".csv"
 
-                    # instead of originally generated names we will use human readable name of attribute
-                    manifest_json["dataSetSLIManifest"]["parts"][p]["columnName"] = human_readable_name
-                    csv_header_template.append(human_readable_name)
-                    p += 1
-
-                # also name of csv file is changed within manifest
-                manifest_json["dataSetSLIManifest"]["file"] = dataset + ".csv"
-
-                # save each csv_header_template to list for later usage
-                csv_header_template.sort()
-                self.csv_header_templates.append(csv_header_template)
-                # storing each manifest in list for later usage
-                self.manifests.append(manifest_json)
+            # save each csv_header_template to list for later usage
+            csv_header_template.sort()
+            self.csv_header_templates.append(csv_header_template)
+            # storing each manifest in list for later usage
+            self.manifests.append(manifest_json)
 
         # writing manifests and csv templates files to etl working directory
         try:
@@ -98,7 +96,7 @@ class GoodDataETL():
 
             # write to file in dir manifests in etl working directory
             for i in range(len(self.datasets)):
-                with open(os.path.join(self.wd, self.project, "manifests", self.datasets[i] + "_upload_info.json"),
+                with open(os.path.join(self.wd, self.project, "manifests", self.datasets[i] + ".json"),
                           "w") as f:
                     f.write(json.dumps(self.manifests[i], sort_keys=True, indent=2, separators=(',', ': ')))
             # write csv file with template header to csv dir
@@ -106,7 +104,7 @@ class GoodDataETL():
                 with open(os.path.join(self.wd, self.project, "csv", self.datasets[i] + "_header.csv"), "w") as f:
                     pom = ""
                     for attr in self.csv_header_templates[i]:
-                        pom += '"%s",' % attr
+                        pom += '"{}",'.format(attr)
                     f.write(pom[0:-1])
 
             # create final upload_info.json
@@ -122,8 +120,10 @@ class GoodDataETL():
                 f.write(json.dumps(upload_info_json, sort_keys=True, indent=2, separators=(',', ': ')))
 
         except OSError as e:
+            logger.error(e, exc_info=True)
             raise gd.GoodDataError("Problem with etl working directory", e)
         except IOError as e:
+            logger.error(e, exc_info=True)
             raise gd.GoodDataError("Problem during file operation", e)
 
     def perform_upload(self):
@@ -143,6 +143,7 @@ class GoodDataETL():
                 else:
                     self.datasets.append(upload_info_json["dataSetSLIManifest"]["dataSet"][8:])
             except Exception as e:
+                logger.error(e, exc_info=True)
                 raise gd.GoodDataError("Problem parsing upload_info.json - run preparation phase and try it again", e)
 
         # compare headers of csv files for upload with template csv files
@@ -162,7 +163,7 @@ class GoodDataETL():
                 header_csv.sort()
 
                 if header_template != header_csv:
-                    raise gd.GoodDataError("Header of template file and csv file for upload doesn't match")
+                    raise gd.GoodDataError("Error: Header of template file and csv file for upload doesn't match")
                 p += 1
             else:
                 # it should not happen in normal circumstances - I used this only for testing :-)
@@ -170,42 +171,46 @@ class GoodDataETL():
                     raise Exception("Checking of csv headers did not happen (self.datasets empty)")
 
         except IOError as e:
-            raise gd.GoodDataError("Problem during comparing csv headers", e)
+            logger.error(e, exc_info=True)
+            raise gd.GoodDataError("IO problem during comparing csv headers", e)
         except gd.GoodDataError as e:
-            print e
-            print "%s: \n%s" % (os.path.basename(header_template_file), header_template)
-            print "%s: \n%s" % (os.path.basename(header_csv_file), header_csv)
-            print "\n%s file MUST contain same columns as %s (order doesn't matter)" % (
+            emsg = "{}\n{}:\n{}\n{}:\n{}\nFile '{}' MUST contain same columns as file '{}' (order doesn't matter)".format(e,
+                os.path.basename(header_template_file), header_template, os.path.basename(header_csv_file), header_csv,
                 os.path.basename(header_csv_file), os.path.basename(header_template_file))
+            logger.error(emsg)
+            raise gd.GoodDataError(emsg)
         except Exception as e:
+            logger.error(e, exc_info=True)
             raise gd.GoodDataError(e)
-        else:
-            # creating upload.zip
-            try:
-                files = []
-                # adding csv files with data for upload
-                for dataset in self.datasets:
-                    files.append(os.path.join(self.wd, self.project, "csv", dataset + ".csv"))
-                # adding current manifest
-                files.append(os.path.join(self.wd, self.project, "manifests", "upload_info.json"))
 
-                zf = zipfile.ZipFile(os.path.join(self.wd, self.project, "upload.zip"), "w", zipfile.ZIP_DEFLATED)
-                for f in files:
-                    zf.write(f, os.path.basename(f))
-                zf.close()
+        # creating upload.zip
+        try:
+            # list of files for upload.zip
+            files = []
+            # adding csv files with data for upload
+            for dataset in self.datasets:
+                files.append(os.path.join(self.wd, self.project, "csv", dataset + ".csv"))
+            # adding current manifest
+            files.append(os.path.join(self.wd, self.project, "manifests", "upload_info.json"))
 
-                zf = zipfile.ZipFile(os.path.join(self.wd, self.project, "upload.zip"))
-                with open(os.path.join(self.wd, self.project, "upload.txt"), "w") as f:
-                    for info in zf.infolist():
-                        f.write("%s\n" % info.filename)
-                        f.write("\tModified:\t%s\n" % datetime.datetime(*info.date_time))
-                        f.write("\tCompressed:\t%d bytes\n" % info.compress_size)
-                        f.write("\tUncompressed:\t%d bytes\n" % info.file_size)
-            except Exception as e:
-                raise gd.GoodDataError(
-                    "Problem during creating upload.zip - check that all source files for upload are in csv directory",
-                    e)
+            zf = zipfile.ZipFile(os.path.join(self.wd, self.project, "upload.zip"), "w", zipfile.ZIP_DEFLATED)
+            for f in files:
+                zf.write(f, os.path.basename(f))
+            zf.close()
 
+            zf = zipfile.ZipFile(os.path.join(self.wd, self.project, "upload.zip"))
+            with open(os.path.join(self.wd, self.project, "upload.txt"), "w") as f:
+                for info in zf.infolist():
+                    f.write("{}\n".format(info.filename))
+                    f.write("\tModified:\t{}\n".format(datetime.datetime(*info.date_time)))
+                    f.write("\tCompressed:\t{} bytes\n".format(info.compress_size))
+                    f.write("\tUncompressed:\t{} bytes\n".format(info.file_size))
+        except Exception as e:
+            logger.error(e, exc_info=True)
+            raise gd.GoodDataError(
+                "Problem during creating upload.zip - check that all source files for upload are in csv directory", e)
+
+        #upload to WebDav
 
 def create_dir_if_not_exists(directory):
     if not os.path.isdir(directory):
@@ -215,7 +220,21 @@ def create_dir_if_not_exists(directory):
 # test code
 if __name__ == "__main__":
 
-    GoodDataETL.debug = False
+    import logging.config
+
+    # load the logging configuration
+    logging.config.fileConfig("logging.ini", disable_existing_loggers=False)
+    logging.getLogger("root").setLevel(logging.DEBUG)
+    logging.Logger.disabled = False
+
+    # handlers
+    console_handler = logging.getLogger().handlers[0]
+    file_handler = logging.getLogger().handlers[1]
+    # set log level for handlers - example
+    console_handler.setLevel(logging.ERROR)
+    file_handler.setLevel(logging.DEBUG)
+    # example of removing handler
+    logging.getLogger().removeHandler(console_handler)
 
     try:
         # GoodData login
@@ -234,10 +253,8 @@ if __name__ == "__main__":
 
         # GoodData logout
         gl.logout()
-    except gd.GoodDataError as e:
-        print e
-    except gd.GoodDataAPIError as e:
-        print e
+    except (gd.GoodDataError, gd.GoodDataAPIError) as e:
+        print(e)
     except Exception, emsg:
-        print traceback.print_exc()
-        print "General error: " + str(emsg)
+        print(traceback.print_exc())
+        print("General error: " + str(emsg))
