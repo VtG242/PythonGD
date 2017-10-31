@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import traceback
 import urllib2
@@ -23,8 +24,8 @@ class GoodDataETL():
         self.csv_header_templates = []
         self.remote_etl_dir = ""
         self.etl_task_result = "N/A"
-        # ([datasets][modes]) is collection of lists datasets and their upload modes
-        self.datasets = ([], [])
+        # {[dataset][mode]}
+        self.datasets = {}
         # creating of a working_directory and set self.manifests in case that upload_info.json exists in manifests dir
         try:
             create_dir_if_not_exists(self.wd)
@@ -38,24 +39,31 @@ class GoodDataETL():
                     upload_info_json = json.loads(f.read())
 
                 if upload_info_json.has_key("dataSetSLIManifestList"):
+                    # slibatch mode
                     for manifest in upload_info_json["dataSetSLIManifestList"]:
-                        self.datasets[0].append(manifest["dataSetSLIManifest"]["dataSet"][8:])
+                        self.datasets[manifest["dataSetSLIManifest"]["dataSet"][8:]] = manifest["dataSetSLIManifest"][
+                            "mode"]
                 else:
-                    self.datasets.append[0](upload_info_json["dataSetSLIManifest"]["dataSet"][8:])
+                    # single manifest
+                    self.datasets[upload_info_json["dataSetSLIManifest"]["dataSet"][8:]] = \
+                        upload_info_json["dataSetSLIManifest"]["mode"]
         except OSError as e:
-            raise gd.GoodDataError("Problem with etl working directory or trouble during parsing upload_info.json", e)
+            emsg = u"Error: Problem with etl working directory"
+            logger.error(emsg, exc_info=True)
+            raise gd.GoodDataError(emsg, e)
+        except Exception as e:
+            emsg = u"Error: Problem during parsing upload_info.json - please delete content of directory manifests"
+            logger.error(emsg, exc_info=True)
+            raise gd.GoodDataError(emsg, traceback.print_exc())
 
     def add_dataset(self, mode, dataset=None):
         if dataset:
             # individual dataset and mode will be set to self.datasets
             # TODO: check of dataset existence - now only blindly adding what was passed
-            self.datasets[0].append(dataset)
-            self.datasets[1].append(mode)
-            print self.datasets
+            self.datasets[dataset] = mode
         else:
             # all datasets from project will beset for ETL using specified mode
             print "ALL"
-
 
     def prepare_upload(self):
         """ This function downloads manifest/s for given list of datasets from GoodData API
@@ -68,7 +76,8 @@ class GoodDataETL():
         headers = gd.http_headers_template.copy()
         headers["X-GDC-AuthTT"] = self.glo.generate_temporary_token()
 
-        for dataset in self.datasets[0]:
+        logger.debug("Preparing metadata for following datasets:\n{}".format(self.datasets))
+        for dataset in self.datasets.keys():
             url = self.glo.gdhost + "/gdc/md/" + self.project + "/ldm/singleloadinterface/dataset." + dataset + "/manifest"
             request = urllib2.Request(url, headers=headers)
 
@@ -113,23 +122,23 @@ class GoodDataETL():
             # storing each manifest in list for later usage
             self.manifests.append(manifest_json)
 
-        # writing manifests and csv templates files to etl working directory
         try:
-            # write to file in dir manifests in etl working directory
-            for i in range(len(self.datasets[0])):
-                with open(os.path.join(self.wd, self.project, "manifests", self.datasets[0][i] + ".json"),
-                          "w") as f:
+            i = 0
+            # writing manifests and csv templates files to etl working directory
+            for dtset in self.datasets.keys():
+                # write to file in dir manifests in etl working directory
+                with open(os.path.join(self.wd, self.project, "manifests", dtset + ".json"), "w") as f:
                     f.write(json.dumps(self.manifests[i], sort_keys=True, indent=2, separators=(',', ': ')))
-            # write csv file with template header to csv dir
-            for i in range(len(self.datasets[0])):
-                with open(os.path.join(self.wd, self.project, "csv", self.datasets[0][i] + "_header.csv"), "w") as f:
+                # write csv file with template header to csv dir
+                with open(os.path.join(self.wd, self.project, "csv", dtset + "_header.csv"), "w") as f:
                     pom = ""
                     for attr in self.csv_header_templates[i]:
                         pom += '"{}",'.format(attr)
                     f.write(pom[0:-1])
+                i += 1
 
             # create final upload_info.json
-            if len(datasets) > 1:  # we create SLI BATCH manifest
+            if len(self.datasets.keys()) > 1:  # we create SLI BATCH manifest
                 upload_info_json = {"dataSetSLIManifestList": []}
                 for manifest in self.manifests:
                     upload_info_json["dataSetSLIManifestList"].append(manifest)
@@ -153,22 +162,23 @@ class GoodDataETL():
         As this method can be also called directly(without calling prepare_upload() after creating GoodDataETL instance
         we have to check that all necessary files are in place.
         """
-        if not self.datasets[0]:
+        if not self.datasets:
             emsg = "Error: You MUST specify datatests and upload modes - add datasets and run preparation phase again"
             logger.error("{}".format(emsg))
             raise gd.GoodDataError(emsg)
 
         # compare headers of csv files for upload with template csv files
         try:
-            p = 0
-            for dataset in self.datasets[0]:
+            for dataset in self.datasets.keys():
                 header_template_file = os.path.join(self.wd, self.project, "csv", dataset + "_header.csv")
                 with open(header_template_file, "r") as f:
                     reader = csv.reader(f)
+                    # csv header from template file
                     header_template = reader.next()
                 header_csv_file = os.path.join(self.wd, self.project, "csv", dataset + ".csv")
                 with open(header_csv_file, "r") as f:
                     reader = csv.reader(f)
+                    # csv header from data file
                     header_csv = reader.next()
 
                 header_template.sort()
@@ -176,33 +186,29 @@ class GoodDataETL():
 
                 if header_template != header_csv:
                     raise gd.GoodDataError("Error: Header of template file and csv file for upload doesn't match")
-                p += 1
-            else:
-                # it should not happen in normal circumstances - I used this only for testing :-)
-                if p == 0:
-                    raise Exception("Checking of csv headers did not happen (self.datasets empty)")
 
         except IOError as e:
-            emsg = "Problem during comparing csv headers - check that csv files are in foler csv within ETL working directory"
+            emsg = "Problem during comparing csv headers - check that csv files are in csv folder within ETL working directory"
             logger.error("{}: {}".format(emsg, e))
-            raise gd.GoodDataError(emsg, e)
+            raise gd.GoodDataError("Error: {}".format(emsg), e)
         except gd.GoodDataError as e:
             emsg = "{}\n{}:\n{}\n{}:\n{}\nFile '{}' MUST contain same columns as file '{}' (order doesn't matter)".format(
                 e,
                 os.path.basename(header_template_file), header_template, os.path.basename(header_csv_file), header_csv,
                 os.path.basename(header_csv_file), os.path.basename(header_template_file))
             logger.error(emsg)
-            raise gd.GoodDataError(emsg)
+            raise gd.GoodDataError("Error: {}".format(emsg))
         except Exception as e:
-            logger.error(e, exc_info=True)
-            raise gd.GoodDataError(e)
+            emsg = "Unexpected problem during comparing csv headers"
+            logger.error(emsg, exc_info=True)
+            raise gd.GoodDataError("Error: {}".format(emsg), traceback.print_exc())
 
         # creating upload.zip
         try:
             # list of files for upload.zip
             files = []
             # adding csv files with data for upload
-            for dataset in self.datasets[0]:
+            for dataset in self.datasets.keys():
                 files.append(os.path.join(self.wd, self.project, "csv", dataset + ".csv"))
             # adding current manifest
             files.append(os.path.join(self.wd, self.project, "manifests", "upload_info.json"))
@@ -220,9 +226,9 @@ class GoodDataETL():
                     f.write("\tCompressed:\t{} bytes\n".format(info.compress_size))
                     f.write("\tUncompressed:\t{} bytes\n".format(info.file_size))
         except Exception as e:
-            logger.error(e, exc_info=True)
-            raise gd.GoodDataError(
-                "Problem during creating upload.zip - check that all source files for upload are in csv directory", e)
+            emsg = "Problem during creating upload.zip - check that all source files for upload are in csv directory"
+            logger.error(emsg, exc_info=True)
+            raise gd.GoodDataError("Error: {}".format(emsg), traceback.print_exc())
 
         # upload to WebDav
         upload_zip_size = os.path.getsize(os.path.join(self.wd, self.project, "upload.zip"))
@@ -373,9 +379,10 @@ if __name__ == "__main__":
 
         # Creating etl instance
         etl = GoodDataETL(gl, "gmlgncezgyatnnr0d1mc6tss82olgf0s", "/Users/VtG/Work/PycharmProjects/GD/etlwd")
-        etl.add_dataset("INCR","new")
-        etl.add_dataset("FULL", "new2")
-        """
+        etl.add_dataset(u"INCREMENTAL", u"allgrain")
+        etl.add_dataset(u"FULL", u"all")
+        print(etl.datasets)
+
         # Preparing metadata for ETL
         etl.prepare_upload()
 
@@ -390,7 +397,7 @@ if __name__ == "__main__":
         else:
             print("ETL for project '{}' failed".format(etl.project))
             print("Error detail: {}".format(etl.etl_task_result))
-        """
+
         # GoodData logout
         gl.logout()
 
