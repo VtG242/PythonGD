@@ -19,33 +19,56 @@ class GoodDataETL():
         self.glo = globject
         self.project = project
         self.wd = working_directory
-        self.datasets = []
         self.manifests = []
         self.csv_header_templates = []
         self.remote_etl_dir = ""
         self.etl_task_result = "N/A"
-
-        # creating of a working_directory
+        # ([datasets][modes]) is collection of lists datasets and their upload modes
+        self.datasets = ([], [])
+        # creating of a working_directory and set self.manifests in case that upload_info.json exists in manifests dir
         try:
             create_dir_if_not_exists(self.wd)
-        except OSError as e:
-            raise gd.GoodDataError("Problem with etl working directory", e)
+            create_dir_if_not_exists(os.path.join(self.wd, self.project))
+            create_dir_if_not_exists(os.path.join(self.wd, self.project, "csv"))
+            create_dir_if_not_exists(os.path.join(self.wd, self.project, "manifests"))
 
-    def prepare_upload(self, datasets):
+            # in case that upload_info.json exists we will fill self.datasets using this file
+            if os.path.isfile(os.path.join(self.wd, self.project, "manifests", "upload_info.json")):
+                with open(os.path.join(self.wd, self.project, "manifests", "upload_info.json"), "r") as f:
+                    upload_info_json = json.loads(f.read())
+
+                if upload_info_json.has_key("dataSetSLIManifestList"):
+                    for manifest in upload_info_json["dataSetSLIManifestList"]:
+                        self.datasets[0].append(manifest["dataSetSLIManifest"]["dataSet"][8:])
+                else:
+                    self.datasets.append[0](upload_info_json["dataSetSLIManifest"]["dataSet"][8:])
+        except OSError as e:
+            raise gd.GoodDataError("Problem with etl working directory or trouble during parsing upload_info.json", e)
+
+    def add_dataset(self, mode, dataset=None):
+        if dataset:
+            # individual dataset and mode will be set to self.datasets
+            # TODO: check of dataset existence - now only blindly adding what was passed
+            self.datasets[0].append(dataset)
+            self.datasets[1].append(mode)
+            print self.datasets
+        else:
+            # all datasets from project will beset for ETL using specified mode
+            print "ALL"
+
+
+    def prepare_upload(self):
         """ This function downloads manifest/s for given list of datasets from GoodData API
         1) modify names for csv columns to more human readable names
         2) save manifests in etl working directory in project/manifest
         3) save template csv with headers in etl working directory in project/csv
         4) creates final upload_info.json - in case of more datasets it creates batch mode manifest
         """
-        self.datasets = datasets
-        self.datasets.sort()
-
         # according to datasets we will download and consequently modify manifests for specified dataset
         headers = gd.http_headers_template.copy()
         headers["X-GDC-AuthTT"] = self.glo.generate_temporary_token()
 
-        for dataset in self.datasets:
+        for dataset in self.datasets[0]:
             url = self.glo.gdhost + "/gdc/md/" + self.project + "/ldm/singleloadinterface/dataset." + dataset + "/manifest"
             request = urllib2.Request(url, headers=headers)
 
@@ -92,19 +115,14 @@ class GoodDataETL():
 
         # writing manifests and csv templates files to etl working directory
         try:
-            # if directory infrastructure doesn't exist let's create it
-            create_dir_if_not_exists(os.path.join(self.wd, self.project))
-            create_dir_if_not_exists(os.path.join(self.wd, self.project, "csv"))
-            create_dir_if_not_exists(os.path.join(self.wd, self.project, "manifests"))
-
             # write to file in dir manifests in etl working directory
-            for i in range(len(self.datasets)):
-                with open(os.path.join(self.wd, self.project, "manifests", self.datasets[i] + ".json"),
+            for i in range(len(self.datasets[0])):
+                with open(os.path.join(self.wd, self.project, "manifests", self.datasets[0][i] + ".json"),
                           "w") as f:
                     f.write(json.dumps(self.manifests[i], sort_keys=True, indent=2, separators=(',', ': ')))
             # write csv file with template header to csv dir
-            for i in range(len(self.datasets)):
-                with open(os.path.join(self.wd, self.project, "csv", self.datasets[i] + "_header.csv"), "w") as f:
+            for i in range(len(self.datasets[0])):
+                with open(os.path.join(self.wd, self.project, "csv", self.datasets[0][i] + "_header.csv"), "w") as f:
                     pom = ""
                     for attr in self.csv_header_templates[i]:
                         pom += '"{}",'.format(attr)
@@ -135,25 +153,15 @@ class GoodDataETL():
         As this method can be also called directly(without calling prepare_upload() after creating GoodDataETL instance
         we have to check that all necessary files are in place.
         """
-        if not self.datasets:
-            try:
-                with open(os.path.join(self.wd, self.project, "manifests", "upload_info.json"), "r") as f:
-                    upload_info_json = json.loads(f.read())
-
-                if upload_info_json.has_key("dataSetSLIManifestList"):
-                    for manifest in upload_info_json["dataSetSLIManifestList"]:
-                        self.datasets.append(manifest["dataSetSLIManifest"]["dataSet"][8:])
-                else:
-                    self.datasets.append(upload_info_json["dataSetSLIManifest"]["dataSet"][8:])
-            except Exception as e:
-                emsg = "Problem parsing upload_info.json - run preparation phase and try it again"
-                logger.error("{}: {}".format(emsg, e))
-                raise gd.GoodDataError(emsg, e)
+        if not self.datasets[0]:
+            emsg = "Error: You MUST specify datatests and upload modes - add datasets and run preparation phase again"
+            logger.error("{}".format(emsg))
+            raise gd.GoodDataError(emsg)
 
         # compare headers of csv files for upload with template csv files
         try:
             p = 0
-            for dataset in self.datasets:
+            for dataset in self.datasets[0]:
                 header_template_file = os.path.join(self.wd, self.project, "csv", dataset + "_header.csv")
                 with open(header_template_file, "r") as f:
                     reader = csv.reader(f)
@@ -175,8 +183,9 @@ class GoodDataETL():
                     raise Exception("Checking of csv headers did not happen (self.datasets empty)")
 
         except IOError as e:
-            logger.error(e, exc_info=True)
-            raise gd.GoodDataError("IO problem during comparing csv headers", e)
+            emsg = "Problem during comparing csv headers - check that csv files are in foler csv within ETL working directory"
+            logger.error("{}: {}".format(emsg, e))
+            raise gd.GoodDataError(emsg, e)
         except gd.GoodDataError as e:
             emsg = "{}\n{}:\n{}\n{}:\n{}\nFile '{}' MUST contain same columns as file '{}' (order doesn't matter)".format(
                 e,
@@ -193,7 +202,7 @@ class GoodDataETL():
             # list of files for upload.zip
             files = []
             # adding csv files with data for upload
-            for dataset in self.datasets:
+            for dataset in self.datasets[0]:
                 files.append(os.path.join(self.wd, self.project, "csv", dataset + ".csv"))
             # adding current manifest
             files.append(os.path.join(self.wd, self.project, "manifests", "upload_info.json"))
@@ -364,9 +373,11 @@ if __name__ == "__main__":
 
         # Creating etl instance
         etl = GoodDataETL(gl, "gmlgncezgyatnnr0d1mc6tss82olgf0s", "/Users/VtG/Work/PycharmProjects/GD/etlwd")
-
+        etl.add_dataset("INCR","new")
+        etl.add_dataset("FULL", "new2")
+        """
         # Preparing metadata for ETL
-        etl.prepare_upload(["allgrain", "all"])
+        etl.prepare_upload()
 
         # Time for custom code which somehow upload source csv files to csv directory in ETL working directory
 
@@ -379,7 +390,7 @@ if __name__ == "__main__":
         else:
             print("ETL for project '{}' failed".format(etl.project))
             print("Error detail: {}".format(etl.etl_task_result))
-
+        """
         # GoodData logout
         gl.logout()
 
