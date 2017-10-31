@@ -22,6 +22,8 @@ class GoodDataETL():
         self.datasets = []
         self.manifests = []
         self.csv_header_templates = []
+        self.remote_etl_dir = ""
+        self.etl_task_result = "N/A"
 
         # creating of a working_directory
         try:
@@ -41,10 +43,10 @@ class GoodDataETL():
 
         # according to datasets we will download and consequently modify manifests for specified dataset
         headers = gd.http_headers_template.copy()
-        headers["X-GDC-AuthTT"] = etl.glo.generate_temporary_token()
+        headers["X-GDC-AuthTT"] = self.glo.generate_temporary_token()
 
         for dataset in self.datasets:
-            url = etl.glo.gdhost + "/gdc/md/" + self.project + "/ldm/singleloadinterface/dataset." + dataset + "/manifest"
+            url = self.glo.gdhost + "/gdc/md/" + self.project + "/ldm/singleloadinterface/dataset." + dataset + "/manifest"
             request = urllib2.Request(url, headers=headers)
 
             try:
@@ -127,7 +129,7 @@ class GoodDataETL():
             logger.error(e, exc_info=True)
             raise gd.GoodDataError("Problem during file operation", e)
 
-    def perform_upload(self):
+    def perform_data_upload(self):
         """
         This method performs upload to user staging directory (WebDav)
         As this method can be also called directly(without calling prepare_upload() after creating GoodDataETL instance
@@ -144,8 +146,9 @@ class GoodDataETL():
                 else:
                     self.datasets.append(upload_info_json["dataSetSLIManifest"]["dataSet"][8:])
             except Exception as e:
-                logger.error(e, exc_info=True)
-                raise gd.GoodDataError("Problem parsing upload_info.json - run preparation phase and try it again", e)
+                emsg = "Problem parsing upload_info.json - run preparation phase and try it again"
+                logger.error("{}: {}".format(emsg, e))
+                raise gd.GoodDataError(emsg, e)
 
         # compare headers of csv files for upload with template csv files
         try:
@@ -220,8 +223,8 @@ class GoodDataETL():
             headers["Content-Type"] = "application/zip"
             headers["Content-Length"] = upload_zip_size
 
-            remote_etl_dir = uuid.uuid4().hex
-            url = "https://secure-di.gooddata.com/uploads/{}/{}/upload.zip".format(self.project, remote_etl_dir)
+            self.remote_etl_dir = uuid.uuid4().hex
+            url = "https://secure-di.gooddata.com/uploads/{}/{}/upload.zip".format(self.project, self.remote_etl_dir)
             request = urllib2.Request(url, headers=headers, data=f.read())
             request.get_method = lambda: 'PUT'
 
@@ -245,7 +248,89 @@ class GoodDataETL():
         api_response = gd.check_response(response)
         logger.debug(gd.response_info(api_response))
         logger.debug("File uploaded to WebDav in {}s".format(round(total_time_sec, 2)))
+
         response.close()
+
+    def perform_project_load(self):
+
+        headers = gd.http_headers_template.copy()
+        headers["X-GDC-AuthTT"] = self.glo.generate_temporary_token()
+        url = self.glo.gdhost + "/gdc/md/" + self.project + "/etl/pull2"
+        etl_json = {"pullIntegration": self.project + "/" + self.remote_etl_dir}
+        request = urllib2.Request(url, headers=headers, data=json.dumps(etl_json))
+
+        try:
+            logger.debug(gd.request_info(request))
+            response = urllib2.urlopen(request)
+        except urllib2.HTTPError as e:
+            # for 40x errors we don't retry
+            if e.code == 404:
+                logger.error(e, exc_info=True)
+                raise gd.GoodDataAPIError(url, e, msg="GoodData project doesn't exist")
+            elif e.code == 403:
+                logger.error(e, exc_info=True)
+                raise gd.GoodDataAPIError(url, e, msg="Admin or editor role is required")
+            else:
+                raise Exception(e)
+                # to do take a look at reason and in case of need check /gdc/ping anf if everything OK try retry
+
+        # 201 created - processing of etl/pull2 response
+        api_response = gd.check_response(response)
+        logger.debug(gd.response_info(api_response))
+        poll_url = json.loads(api_response["body"])["pull2Task"]["links"]["poll"]
+
+        # poll for full result
+        url = self.glo.gdhost + poll_url
+        etl_task_state = "RUNNING"
+
+        logger.debug("Polling '{}' for final result".format(url))
+        retry = 0
+        while etl_task_state == "RUNNING":
+            # current request
+            request = urllib2.Request(url, headers=headers)
+            try:
+                response = urllib2.urlopen(request)
+            except urllib2.HTTPError as e:
+                if e.code == 401:
+                    # it seems that a new temporary token should be generated and we need to repeat poll request
+                    logger.debug("* 401 response on state of ETL task - calling for valid TT.")
+                    headers["X-GDC-AuthTT"] = gl.generate_temporary_token()
+                    continue
+                else:
+                    retry += 1
+                    if retry == 4:
+                        emsg = "Problem during call for state of ETL task"
+                        logger.error("{}: {}".format(emsg, e))
+                        raise gd.GoodDataAPIError(url, e, emsg)
+                    else:
+                        logger.warning(
+                            "* {} response on state of ETL task - retry({}):\n{}".format(e.code, retry, e.read()))
+            else:
+                # poll response
+                response_body = response.read()
+                etl_task_state = json.loads(response_body)["wTaskStatus"]["status"]
+
+            # don't spam wait some time
+            time.sleep(3)
+
+        # ETL finished - returning state and save text result message
+        if etl_task_state == "ERROR":
+            err_params = json.loads(response_body)["wTaskStatus"]["messages"][0]["error"]["parameters"]
+            err_message = json.loads(response_body)["wTaskStatus"]["messages"][0]["error"]["message"]
+            logger.error(err_message % (tuple(err_params)))
+            self.etl_task_result = "ERROR" + err_message % (tuple(err_params))
+            etl_ok = False
+        elif etl_task_state == "OK":
+            self.etl_task_result = etl_task_state
+            etl_ok = True
+        else:  # CANCELED ?
+            self.etl_task_result = etl_task_state
+            etl_ok = False
+
+        logger.info("ETL has been finished with following state:\n{}".format(self.etl_task_result))
+        return etl_ok
+
+        # TODO - after ETL finish - download upload_status.json with details about ETL run
 
 
 def create_dir_if_not_exists(directory):
@@ -273,6 +358,7 @@ if __name__ == "__main__":
     logging.getLogger().removeHandler(console_handler)
 
     try:
+
         # GoodData login
         gl = gdlogin.GoodDataLogin("vladimir.volcko+sso@gooddata.com", "xxx")
 
@@ -284,11 +370,19 @@ if __name__ == "__main__":
 
         # Time for custom code which somehow upload source csv files to csv directory in ETL working directory
 
-        # Main upload to GoodData platform
-        etl.perform_upload()
+        # Local data upload to GD WebDav server on the basis of metadata from prepare_upload()
+        etl.perform_data_upload()
+
+        # Main ETL - Loading data from Webdav(uploaded by perform_data_upload) to GD project
+        if etl.perform_project_load():
+            print("ETL for project '{}' finished with status {}".format(etl.project, etl.etl_task_result))
+        else:
+            print("ETL for project '{}' failed".format(etl.project))
+            print("Error detail: {}".format(etl.etl_task_result))
 
         # GoodData logout
         gl.logout()
+
     except (gd.GoodDataError, gd.GoodDataAPIError) as e:
         print(e)
     except Exception, emsg:

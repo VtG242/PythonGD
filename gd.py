@@ -14,14 +14,17 @@ http_headers_template = {
 
 
 def request_info(request):
-    try:
-        # TODO - quick and dirty hack - find a better way how to identify that the string has binary data
-        unicode(request.data[0:100], "utf-8")
-    except Exception as e:
-        data = "\nData: binary"
+    if request.data:
+        try:
+            # TODO - quick and dirty hack - find a better way how to identify that the string has binary data
+            unicode(request.data[0:100], "utf-8")
+        except Exception as e:
+            data = "\nData: binary"
+        else:
+            data = "\nData: " + request.data
     else:
-        data = "" if not request.data else "\nData: " + request.data
-    return "REQUEST: {} {}\nHeaders: {}{}".format(request.get_method(), request.get_full_url(), request.headers, data)
+        data = ""
+    return "REQUEST: {} {}\nHeaders: {}{}".format(request.get_method(), request.get_full_url(), json.dumps(request.headers), data)
 
 
 def response_info(api_response):
