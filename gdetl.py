@@ -105,16 +105,20 @@ class GoodDataETL():
                 if str(m_column["columnName"]).find(".dt_") > -1:
                     human_readable_name = str(m_column["columnName"]).split("_")[-2] + "(" + \
                                           m_column["constraints"]["date"] + ")"
-                else:  # for other attributtes we will pick name after last _
+                else:  # for other attributes we will pick name after last _
                     human_readable_name = str(m_column["columnName"]).split("_")[-1]
 
                 # instead of originally generated names we will use human readable name of attribute
                 manifest_json["dataSetSLIManifest"]["parts"][p]["columnName"] = human_readable_name
                 csv_header_template.append(human_readable_name)
+                # update etl mode
+                manifest_json["dataSetSLIManifest"]["parts"][p]["mode"] = self.datasets[dataset]
                 p += 1
 
-            # also name of csv file is changed within manifest
+            # name of csv file is changed within manifest
             manifest_json["dataSetSLIManifest"]["file"] = dataset + ".csv"
+            # a custom mode field appended to manifest for better handling upload modes
+            manifest_json["dataSetSLIManifest"]["mode"] = self.datasets[dataset]
 
             # save each csv_header_template to list for later usage
             csv_header_template.sort()
@@ -272,7 +276,7 @@ class GoodDataETL():
         headers["X-GDC-AuthTT"] = self.glo.generate_temporary_token()
         url = self.glo.gdhost + "/gdc/md/" + self.project + "/etl/pull2"
         etl_json = {"pullIntegration": self.project + "/" + self.remote_etl_dir}
-        request = urllib2.Request(url, headers=headers, data=json.dumps(etl_json))
+        request = urllib2.Request(url, headers=headers, data=unicode(json.dumps(etl_json)))
 
         try:
             logger.debug(gd.request_info(request))
